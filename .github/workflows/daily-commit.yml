@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          token: ${{ secrets.television_romance }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Make a change to daily.txt
         run: |
