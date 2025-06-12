@@ -1,0 +1,28 @@
+name: Daily Commit
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # Runs every day at 08:00 UTC
+  workflow_dispatch:       # Allows manual run from GitHub UI
+
+jobs:
+  auto-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.television_romance }}
+
+      - name: Make a change to daily.txt
+        run: |
+          echo "Daily ping: $(date -u)" >> daily.txt
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add daily.txt
+          git commit -m "🤖 Daily update on $(date -u)" || echo "Nothing to commit"
+          git push
