@@ -2,7 +2,7 @@ name: Daily Commit
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Runs at minute 0 of every hour (e.g., 00:00, 01:00, ..., 23:00 UTC)
+    - cron: '0 0 * * *'  # once daily at 00:00 UTC
   workflow_dispatch:       # Still allows manual trigger
 
 jobs:
