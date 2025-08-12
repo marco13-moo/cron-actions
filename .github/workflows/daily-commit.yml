@@ -31,35 +31,34 @@ jobs:
           git commit -m "🤖 Daily update on $(date -u)" || echo "Nothing to commit"
           git push origin "$BRANCH"
 
-      - name: Create issue
+      - name: Create issue (via API)
         id: create_issue
         run: |
-          ISSUE_NUMBER=$(gh issue create \
-            --title "Daily Issue $(date +%Y-%m-%d)" \
-            --body "Automatically created daily issue" \
-            --repo marco13-moo/cron-actions \
-            --json number -q ".number")
+          ISSUE_NUMBER=$(gh api repos/marco13-moo/cron-actions/issues \
+            -f title="Daily Issue $(date +%Y-%m-%d)" \
+            -f body="Automatically created daily issue" \
+            --jq '.number')
           echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create pull request linked to issue
+      - name: Create pull request linked to issue (via API)
         id: create_pr
         run: |
-          PR_NUMBER=$(gh pr create \
-            --title "Daily PR $(date +%Y-%m-%d)" \
-            --body "Daily automated PR\n\nCloses #${{ steps.create_issue.outputs.issue_number }}" \
-            --head "${{ steps.commit_changes.outputs.branch_name }}" \
-            --base main \
-            --repo marco13-moo/cron-actions \
-            --json number -q ".number")
+          PR_NUMBER=$(gh api repos/marco13-moo/cron-actions/pulls \
+            -f title="Daily PR $(date +%Y-%m-%d)" \
+            -f body="Daily automated PR\n\nCloses #${{ steps.create_issue.outputs.issue_number }}" \
+            -f head="${{ steps.commit_changes.outputs.branch_name }}" \
+            -f base="main" \
+            --jq '.number')
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Merge pull request instantly
         run: |
-          gh pr merge ${{ steps.create_pr.outputs.pr_number }} --merge --admin --repo marco13-moo/cron-actions
+          gh api repos/marco13-moo/cron-actions/pulls/${{ steps.create_pr.outputs.pr_number }}/merge \
+            -f merge_method=merge
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
