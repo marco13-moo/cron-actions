@@ -1,12 +1,12 @@
-name: Daily Commit
+name: Daily Commit, PR, and Issue
 
 on:
   schedule:
     - cron: '0 0 * * *'  # once daily at 00:00 UTC
-  workflow_dispatch:       # Still allows manual trigger
+  workflow_dispatch:
 
 jobs:
-  auto-commit:
+  auto-commit-pr-issue:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,10 +19,54 @@ jobs:
         run: |
           echo "Daily ping: $(date -u)" >> daily.txt
 
-      - name: Commit and push changes
+      - name: Commit changes on new branch
+        id: commit_changes
         run: |
+          BRANCH="daily-update-$(date +%Y-%m-%d)"
+          echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add daily.txt
           git commit -m "🤖 Daily update on $(date -u)" || echo "Nothing to commit"
-          git push
+          git push origin "$BRANCH"
+
+      - name: Create issue
+        id: create_issue
+        run: |
+          ISSUE_NUMBER=$(gh issue create \
+            --title "Daily Issue $(date +%Y-%m-%d)" \
+            --body "Automatically created daily issue" \
+            --repo marco13-moo/cron-actions \
+            --json number -q ".number")
+          echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create pull request linked to issue
+        id: create_pr
+        run: |
+          PR_NUMBER=$(gh pr create \
+            --title "Daily PR $(date +%Y-%m-%d)" \
+            --body "Daily automated PR\n\nCloses #${{ steps.create_issue.outputs.issue_number }}" \
+            --head "${{ steps.commit_changes.outputs.branch_name }}" \
+            --base main \
+            --repo marco13-moo/cron-actions \
+            --json number -q ".number")
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge pull request instantly
+        run: |
+          gh pr merge ${{ steps.create_pr.outputs.pr_number }} --merge --admin --repo marco13-moo/cron-actions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete branch after merge
+        run: |
+          gh api \
+            -X DELETE \
+            "repos/marco13-moo/cron-actions/git/refs/heads/${{ steps.commit_changes.outputs.branch_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
