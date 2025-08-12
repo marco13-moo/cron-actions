@@ -57,10 +57,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Merge pull request instantly
+      - name: Merge pull request instantly (with retry)
         run: |
-          gh api repos/marco13-moo/cron-actions/pulls/${{ steps.create_pr.outputs.pr_number }}/merge \
-            -f merge_method=merge
+          PR_NUM=${{ steps.create_pr.outputs.pr_number }}
+          REPO="marco13-moo/cron-actions"
+
+          for i in {1..5}; do
+            echo "Attempt $i to merge PR #$PR_NUM"
+            RESPONSE=$(gh api "repos/$REPO/pulls/$PR_NUM/merge" -f merge_method=merge 2>&1) && break || echo "$RESPONSE"
+            sleep 5
+          done
+
+          if [[ "$RESPONSE" != *"\"merged\":true"* ]]; then
+            echo "Failed to merge PR after retries"
+            exit 1
+          else
+            echo "PR merged successfully"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
