@@ -22,7 +22,8 @@ jobs:
       - name: Commit changes on new branch (force push safe)
         id: commit_changes
         run: |
-          BRANCH="daily-update-$(date +%Y-%m-%d)"
+          # Unique branch name with date and time to avoid collisions
+          BRANCH="daily-update-$(date +%Y-%m-%d-%H%M%S)"
           echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -47,12 +48,28 @@ jobs:
       - name: Create pull request linked to issue (via API)
         id: create_pr
         run: |
-          PR_NUMBER=$(gh api repos/marco13-moo/cron-actions/pulls \
-            -f title="Daily PR $(date +%Y-%m-%d)" \
-            -f body="Daily automated PR\n\nCloses #${{ steps.create_issue.outputs.issue_number }}" \
-            -f head="${{ steps.commit_changes.outputs.branch_name }}" \
-            -f base="main" \
-            --jq '.number')
+          BRANCH="${{ steps.commit_changes.outputs.branch_name }}"
+          REPO="marco13-moo/cron-actions"
+
+          # Give GitHub a moment to register the branch
+          sleep 5
+
+          # Check if a PR from this branch to main already exists
+          PR_NUMBER=$(gh api repos/$REPO/pulls \
+            --jq ".[] | select(.head.ref==\"$BRANCH\" and .base.ref==\"main\") | .number" || true)
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No existing PR found. Creating a new one..."
+            PR_NUMBER=$(gh api repos/$REPO/pulls \
+              -f title="Daily PR $(date +%Y-%m-%d)" \
+              -f body="Daily automated PR\n\nCloses #${{ steps.create_issue.outputs.issue_number }}" \
+              -f head="$BRANCH" \
+              -f base="main" \
+              --jq '.number')
+          else
+            echo "PR already exists: #$PR_NUMBER"
+          fi
+
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
