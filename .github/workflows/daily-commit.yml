@@ -5,13 +5,21 @@ on:
     - cron: '0 0 * * *'  # once daily at 00:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 jobs:
   auto-commit-pr-issue:
     runs-on: ubuntu-latest
+    env:
+      REPO: "marco13-moo/cron-actions"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # gh CLI picks this up
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -22,22 +30,16 @@ jobs:
       - name: Commit changes on new branch (force push safe, auto-rename if PR exists)
         id: commit_changes
         run: |
-          REPO="marco13-moo/cron-actions"
-
-          # Start with date-based branch name
           BRANCH="daily-update-$(date +%Y-%m-%d)"
-          
-          # Check if PR for this branch already exists
-          PR_EXISTS=$(gh api repos/$REPO/pulls \
-            --jq ".[] | select(.head.ref==\"$BRANCH\" and .base.ref==\"main\") | .number" || true)
 
-          # If PR exists, make branch name unique with timestamp
+          # If a PR with this head already exists, make branch unique
+          PR_EXISTS=$(gh api repos/$REPO/pulls --jq ".[] | select(.head.ref==\"$BRANCH\" and .base.ref==\"main\") | .number" || true)
           if [ -n "$PR_EXISTS" ]; then
-            echo "Branch $BRANCH already has a PR (#$PR_EXISTS). Creating a unique branch..."
+            echo "Branch $BRANCH already has PR #$PR_EXISTS; making a unique branch."
             BRANCH="daily-update-$(date +%Y-%m-%d-%H%M%S)"
           fi
 
-          echo "branch_name=$BRANCH" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -45,34 +47,29 @@ jobs:
           git add daily.txt
           git commit -m "🤖 Daily update on $(date -u)" || echo "Nothing to commit"
           git push origin "$BRANCH" --force
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create issue (via API)
         id: create_issue
         run: |
-          ISSUE_NUMBER=$(gh api repos/marco13-moo/cron-actions/issues \
+          ISSUE_NUMBER=$(gh api repos/$REPO/issues \
             -f title="Daily Issue $(date +%Y-%m-%d)" \
             -f body="Automatically created daily issue" \
             --jq '.number')
-          echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
-      - name: Create pull request linked to issue (via API)
+      - name: Create (or find) pull request linked to issue
         id: create_pr
         run: |
           BRANCH="${{ steps.commit_changes.outputs.branch_name }}"
-          REPO="marco13-moo/cron-actions"
 
-          # Wait a moment to ensure the branch is registered
-          sleep 5
+          # Small delay to ensure branch is visible to API
+          sleep 3
 
           PR_NUMBER=$(gh api repos/$REPO/pulls \
             --jq ".[] | select(.head.ref==\"$BRANCH\" and .base.ref==\"main\") | .number" || true)
 
           if [ -z "$PR_NUMBER" ]; then
-            echo "Creating new PR for branch $BRANCH"
+            echo "Creating PR for $BRANCH"
             PR_NUMBER=$(gh api repos/$REPO/pulls \
               -f title="Daily PR $(date +%Y-%m-%d)" \
               -f body="Daily automated PR\n\nCloses #${{ steps.create_issue.outputs.issue_number }}" \
@@ -83,48 +80,59 @@ jobs:
             echo "Using existing PR: #$PR_NUMBER"
           fi
 
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
-      - name: Merge pull request instantly (with retry)
+      - name: Merge pull request (wait for mergeable + retry)
         id: merge_pr
         run: |
-          PR_NUM=${{ steps.create_pr.outputs.pr_number }}
-          REPO="marco13-moo/cron-actions"
+          PR_NUM="${{ steps.create_pr.outputs.pr_number }}"
 
-          for i in {1..5}; do
-            echo "Attempt $i to merge PR #$PR_NUM"
-            RESPONSE=$(gh api "repos/$REPO/pulls/$PR_NUM/merge" -f merge_method=merge 2>&1) && break || echo "$RESPONSE"
+          if [ -z "$PR_NUM" ]; then
+            echo "No PR number found; cannot merge."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Waiting for PR #$PR_NUM to become mergeable..."
+          # Wait up to ~60s for mergeability to be computed
+          for i in {1..12}; do
+            MERGEABLE=$(gh api repos/$REPO/pulls/$PR_NUM --jq '.mergeable' || echo "null")
+            STATE=$(gh api repos/$REPO/pulls/$PR_NUM --jq '.mergeable_state' || echo "unknown")
+            echo "Attempt $i: mergeable=$MERGEABLE, state=$STATE"
+            if [ "$MERGEABLE" = "true" ]; then
+              break
+            fi
             sleep 5
           done
 
-          if [[ "$RESPONSE" != *"\"merged\":true"* ]]; then
-            echo "Failed to merge PR after retries"
-            exit 1
-          else
+          echo "Attempting to merge PR #$PR_NUM"
+          # IMPORTANT: Must be a PUT. Default is GET → your 404.
+          RESPONSE=$(gh api -X PUT "repos/$REPO/pulls/$PR_NUM/merge" -f merge_method=merge 2>&1 || true)
+          echo "$RESPONSE"
+
+          if echo "$RESPONSE" | grep -q '"merged": *true'; then
             echo "PR merged successfully"
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Failed to merge PR"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            # Surface a useful exit code for the job, but let later steps check this output
+            exit 1
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Delete branch after merge
+        if: ${{ steps.merge_pr.outputs.merged == 'true' }}
         run: |
-          gh api \
-            -X DELETE \
-            "repos/marco13-moo/cron-actions/git/refs/heads/${{ steps.commit_changes.outputs.branch_name }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH="${{ steps.commit_changes.outputs.branch_name }}"
+          echo "Deleting branch $BRANCH"
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH"
 
       - name: Close daily issue after merge
-        if: success()
+        if: ${{ steps.merge_pr.outputs.merged == 'true' }}
         run: |
-          ISSUE_NUM=${{ steps.create_issue.outputs.issue_number }}
-          REPO="marco13-moo/cron-actions"
+          ISSUE_NUM="${{ steps.create_issue.outputs.issue_number }}"
           echo "Closing issue #$ISSUE_NUM"
           gh api repos/$REPO/issues/$ISSUE_NUM \
             -X PATCH \
             -f state="closed" \
             -f state_reason="completed"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
